@@ -1,9 +1,5 @@
---[[
-    MM2 Hub - STANDALONE (no loader needed)
-    Paste this ENTIRE file into Potassium and execute
-    Do NOT use the GitHub loader — paste directly
-]]
-
+if getgenv().MM2HubScriptLoaded then return end
+getgenv().MM2HubScriptLoaded = true
 -- ══════════════════════════════════════════
 -- WAIT FOR LIBRARY (already loaded separately)
 -- ══════════════════════════════════════════
