@@ -1,610 +1,795 @@
 if getgenv().MM2HubScriptLoaded then return end
 getgenv().MM2HubScriptLoaded = true
--- ══════════════════════════════════════════
--- WAIT FOR LIBRARY (already loaded separately)
--- ══════════════════════════════════════════
-local Library
-local waited = 0
-repeat
-    Library = getgenv().Library
-    if not Library then task.wait(0.1) waited += 0.1 end
-until Library or waited >= 10
 
+-- ══════════════════════════════════════════════
+--  MM2 Hub v3 — Full Rewrite
+--  Fixed: ESP tracking, FOV slider, kill aura,
+--         movement, anti-exploit, cleaner UI
+-- ══════════════════════════════════════════════
+
+local Library = getgenv().Library
 if not Library then
-    error("Library not loaded after 10 seconds. Load library.lua first.")
-    return
+    local waited = 0
+    repeat task.wait(0.1) waited += 0.1 Library = getgenv().Library until Library or waited >= 10
+    if not Library then error("[MM2 Hub] Library not loaded.") return end
 end
 
--- ══════════════════════════════════════════
--- FOLDERS
--- ══════════════════════════════════════════
-Library.Folders = {
-    Main    = "MM2Hub",
-    Assets  = "MM2Hub/Assets",
-    Configs = "MM2Hub/Configs"
-}
-for _, F in ipairs({"MM2Hub","MM2Hub/Assets","MM2Hub/Configs"}) do
-    if not isfolder(F) then makefolder(F) end
-end
-
--- ══════════════════════════════════════════
--- SERVICES
--- ══════════════════════════════════════════
+-- ── Services ─────────────────────────────────
 local Players           = game:GetService("Players")
 local RunService        = game:GetService("RunService")
 local UserInputService  = game:GetService("UserInputService")
 local Workspace         = game:GetService("Workspace")
 local Stats             = game:GetService("Stats")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService      = game:GetService("TweenService")
 local LocalPlayer       = Players.LocalPlayer
 local Camera            = Workspace.CurrentCamera
-local Mouse             = LocalPlayer:GetMouse()
 
--- ══════════════════════════════════════════
--- WINDOW
--- ══════════════════════════════════════════
+-- ── Folders ──────────────────────────────────
+Library.Folders = { Main="MM2Hub", Assets="MM2Hub/Assets", Configs="MM2Hub/Configs" }
+for _,f in ipairs({"MM2Hub","MM2Hub/Assets","MM2Hub/Configs"}) do
+    if not isfolder(f) then makefolder(f) end
+end
+
+-- ── Window ───────────────────────────────────
 local Window = Library:Window({
     Name    = "MM2 Hub",
-    SubName = "by xxangelxx",
+    SubName = "v3 — clean & fixed",
     Logo    = "1l20959262762131",
 })
 
-assert(Window, "Window creation failed — library may be corrupted")
-
--- ══════════════════════════════════════════
--- STATE
--- ══════════════════════════════════════════
-local State = {
-    ESPEnabled=false, CoinESP=false, GunESP=false,
-    AimbotEnabled=false, SilentAim=false, AimbotFOV=120, AimbotSmooth=0.15, AimbotPart="Head",
-    SpeedEnabled=false, SpeedValue=30, FlyEnabled=false, FlySpeed=50,
-    NoclipEnabled=false, BunnyHop=false, InfiniteStamina=false,
-    KillAura=false, KillAuraRange=15,
+-- ── State ────────────────────────────────────
+local S = {
+    -- ESP
+    ESP=false, CoinESP=false, GunESP=false, PlayerESP_Chams=false,
+    ESPColor_Innocent=Color3.fromRGB(100,255,100),
+    ESPColor_Murderer=Color3.fromRGB(255,60,60),
+    ESPColor_Sheriff=Color3.fromRGB(80,140,255),
+    -- Aimbot
+    Aim=false, SilentAim=false, AimFOV=150, AimSmooth=0.15, AimPart="Head", AimMurdOnly=true,
+    -- Movement
+    Speed=false, SpeedVal=30,
+    Fly=false, FlySpeed=50, FlyBody=nil,
+    Noclip=false, Bhop=false, InfStam=false,
+    -- Combat
+    KillAura=false, KillRange=15,
+    -- Anti
+    AntiFling=false, AntiKill=false, AntiTp=false, AntiNoclip=false, AntiSpd=false,
+    MaxTpDist=50, LastGoodCF=CFrame.new(0,0,0), LastGoodHP=100,
+    -- Misc
+    Desync=false, DesyncStr=5,
+    GodMode=false, FullBright=false, ShowHUD=true,
     AutoCoin=false,
-    DesyncEnabled=false, DesyncStrength=5,
-    FullBright=false, GodMode=false, ShowHUD=true,
-    AntiFling=false, AntiKill=false, AntiTeleport=false, AntiNoclip=false, AntiSpeedHack=false,
-    MaxTeleportDist=50,
-    ESPDrawings={}, CoinDrawings={}, GunDrawings={},
-    FlyBody=nil,
+    -- Drawings
+    ESPDrawings={}, CoinDraw={}, GunDraw={},
+    AEConns={},
 }
 
--- ══════════════════════════════════════════
--- HELPERS
--- ══════════════════════════════════════════
-local function GetChar(p)  return p and p.Character end
-local function GetRoot(p)  local c=GetChar(p) return c and c:FindFirstChild("HumanoidRootPart") end
-local function GetHum(p)   local c=GetChar(p) return c and c:FindFirstChildOfClass("Humanoid") end
-local function IsAlive(p)  local h=GetHum(p) return h and h.Health>0 end
+-- ── Helpers ──────────────────────────────────
+local function Char(p)  return p and p.Character end
+local function Root(p)  local c=Char(p) return c and c:FindFirstChild("HumanoidRootPart") end
+local function Hum(p)   local c=Char(p) return c and c:FindFirstChildOfClass("Humanoid") end
+local function Alive(p) local h=Hum(p) return h and h.Health>0 end
 local function Dist(p)
-    local r=GetRoot(p) local m=GetRoot(LocalPlayer)
-    if not r or not m then return math.huge end
+    local r=Root(p) local m=Root(LocalPlayer)
+    if not r or not m then return 9e9 end
     return (r.Position-m.Position).Magnitude
 end
-local function WTV(pos)
-    local v,on=Camera:WorldToViewportPoint(pos)
-    return Vector2.new(v.X,v.Y),on,v.Z
+local function WTV(v3)
+    local vp,on = Camera:WorldToViewportPoint(v3)
+    return Vector2.new(vp.X,vp.Y), on, vp.Z
 end
-local function GetRole(p)
+local function Role(p)
     local ls=p:FindFirstChild("leaderstats")
     if ls then
         local r=ls:FindFirstChild("Role") or ls:FindFirstChild("role")
-        if r then return r.Value end
+        if r then return tostring(r.Value) end
     end
+    -- fallback: check team
+    if p.Team then return tostring(p.Team.Name) end
     return "Innocent"
 end
-local function RoleColor(p)
-    local r=GetRole(p)
-    if r=="Murderer" or r=="murderer" then return Color3.fromRGB(255,60,60)
-    elseif r=="Sheriff" or r=="sheriff" then return Color3.fromRGB(80,140,255)
-    else return Color3.fromRGB(100,255,100) end
+local function RoleCol(p)
+    local r=Role(p):lower()
+    if r:find("murder") then return S.ESPColor_Murderer
+    elseif r:find("sheriff") then return S.ESPColor_Sheriff
+    else return S.ESPColor_Innocent end
 end
 
--- ══════════════════════════════════════════
--- DRAWING HELPERS
--- ══════════════════════════════════════════
-local function ND(t,p) local d=Drawing.new(t) for k,v in pairs(p) do d[k]=v end return d end
-local function RemDraw(tbl)
-    for _,d in pairs(tbl) do
-        if type(d)=="table" then for _,v in pairs(d) do pcall(function()v:Remove()end) end
-        else pcall(function()d:Remove()end) end
-    end
-    table.clear(tbl)
+-- ── Drawing helpers ──────────────────────────
+local function ND(t,props)
+    local d=Drawing.new(t)
+    for k,v in pairs(props) do d[k]=v end
+    return d
+end
+local function ClearDraw(tbl)
+    for _,v in pairs(tbl) do
+        if type(v)=="table" then for _,d in pairs(v) do pcall(function()d:Remove()end) end
+        else pcall(function()v:Remove()end) end
+    end table.clear(tbl)
 end
 
--- ══════════════════════════════════════════
--- FOV CIRCLE
--- ══════════════════════════════════════════
+-- ── FOV Circle ───────────────────────────────
 local FOVCircle = ND("Circle",{
-    Visible=false, Radius=120, Thickness=1, Filled=false,
+    Visible=false, Radius=150, Thickness=1.5, Filled=false,
     Color=Color3.fromRGB(255,255,255),
     Position=Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
 })
 
--- ══════════════════════════════════════════
--- HUD
--- ══════════════════════════════════════════
+-- ── HUD drawings ─────────────────────────────
 local HUD = {
-    BG   = ND("Square",{Visible=false,Color=Color3.fromRGB(12,12,15),Transparency=0.4,Filled=true,Size=Vector2.new(185,115),Position=Vector2.new(6,6)}),
-    FPS  = ND("Text",  {Visible=false,Color=Color3.fromRGB(100,220,255),Size=14,Font=2,Text="FPS: --"}),
-    Ping = ND("Text",  {Visible=false,Color=Color3.fromRGB(100,255,160),Size=14,Font=2,Text="Ping: --"}),
-    Role = ND("Text",  {Visible=false,Color=Color3.fromRGB(255,200,100),Size=14,Font=2,Text="Role: --"}),
-    Alive= ND("Text",  {Visible=false,Color=Color3.fromRGB(200,200,200),Size=14,Font=2,Text="Alive: --"}),
-    Coins= ND("Text",  {Visible=false,Color=Color3.fromRGB(255,230,60), Size=14,Font=2,Text="Coins: --"}),
-    Prot = ND("Text",  {Visible=false,Color=Color3.fromRGB(255,100,100),Size=14,Font=2,Text="Prot: OFF"}),
-    Bar  = ND("Square",{Visible=false,Color=Color3.fromRGB(0,116,224),Filled=true,Size=Vector2.new(185,2),Position=Vector2.new(6,4)}),
+    BG   = ND("Square",{Visible=false,Color=Color3.fromRGB(10,10,13),Transparency=0.35,Filled=true,Size=Vector2.new(190,120),Position=Vector2.new(6,6)}),
+    FPS  = ND("Text",{Visible=false,Color=Color3.fromRGB(100,220,255),Size=14,Font=2,Text="FPS: --",Outline=true}),
+    Ping = ND("Text",{Visible=false,Color=Color3.fromRGB(100,255,160),Size=14,Font=2,Text="Ping: --",Outline=true}),
+    Role = ND("Text",{Visible=false,Color=Color3.fromRGB(255,200,100),Size=14,Font=2,Text="Role: --",Outline=true}),
+    Alive= ND("Text",{Visible=false,Color=Color3.fromRGB(200,200,200),Size=14,Font=2,Text="Alive: --",Outline=true}),
+    Coins= ND("Text",{Visible=false,Color=Color3.fromRGB(255,230,60), Size=14,Font=2,Text="Coins: --",Outline=true}),
+    Prot = ND("Text",{Visible=false,Color=Color3.fromRGB(255,100,100),Size=14,Font=2,Text="Prot: OFF",Outline=true}),
+    Bar  = ND("Square",{Visible=false,Color=Color3.fromRGB(0,116,224),Filled=true,Size=Vector2.new(190,2),Position=Vector2.new(6,4)}),
 }
-local fpsDisplay=0
+local fpsDisp=0
+
 local function UpdateHUD()
-    local vis=State.ShowHUD
-    for _,v in pairs(HUD) do v.Visible=vis end
-    if not vis then return end
-    local ping=0
-    pcall(function() ping=math.floor(Stats.Network.ServerStatsItem["Data Ping"]:GetValue()) end)
-    local alive=0
-    for _,p in ipairs(Players:GetPlayers()) do if IsAlive(p) then alive+=1 end end
-    local coins=0
-    local ls=LocalPlayer:FindFirstChild("leaderstats")
+    for _,v in pairs(HUD) do v.Visible=S.ShowHUD end
+    if not S.ShowHUD then return end
+    local ping=0 pcall(function() ping=math.floor(Stats.Network.ServerStatsItem["Data Ping"]:GetValue()) end)
+    local alive=0 for _,p in ipairs(Players:GetPlayers()) do if Alive(p) then alive+=1 end end
+    local coins=0 local ls=LocalPlayer:FindFirstChild("leaderstats")
     if ls then local c=ls:FindFirstChild("Coins") or ls:FindFirstChild("coins") if c then coins=c.Value end end
     local b=Vector2.new(14,10)
-    HUD.FPS.Position=b HUD.Ping.Position=b+Vector2.new(0,18) HUD.Role.Position=b+Vector2.new(0,36)
-    HUD.Alive.Position=b+Vector2.new(0,54) HUD.Coins.Position=b+Vector2.new(0,72) HUD.Prot.Position=b+Vector2.new(0,90)
+    HUD.FPS.Position=b; HUD.Ping.Position=b+Vector2.new(0,18); HUD.Role.Position=b+Vector2.new(0,36)
+    HUD.Alive.Position=b+Vector2.new(0,54); HUD.Coins.Position=b+Vector2.new(0,72); HUD.Prot.Position=b+Vector2.new(0,90)
     HUD.Ping.Text="Ping: "..ping.."ms"
-    HUD.Role.Text="Role: "..GetRole(LocalPlayer) HUD.Role.Color=RoleColor(LocalPlayer)
-    HUD.Alive.Text="Alive: "..alive HUD.Coins.Text="Coins: "..coins
-    local protOn=State.AntiFling or State.AntiKill or State.AntiTeleport
+    HUD.Role.Text="Role: "..Role(LocalPlayer); HUD.Role.Color=RoleCol(LocalPlayer)
+    HUD.Alive.Text="Alive: "..alive; HUD.Coins.Text="Coins: "..coins
+    local protOn=S.AntiFling or S.AntiKill or S.AntiTp
     HUD.Prot.Text=protOn and "Prot: ON" or "Prot: OFF"
     HUD.Prot.Color=protOn and Color3.fromRGB(100,255,160) or Color3.fromRGB(255,100,100)
 end
 
--- ══════════════════════════════════════════
--- ANTI-EXPLOIT
--- ══════════════════════════════════════════
-local LastGoodCF=CFrame.new(0,0,0)
-local LastGoodHP=100
-local AEConns={}
-local BlockedPlrs={}
-
-local function EnableAntiFling()
-    local char=GetChar(LocalPlayer)
-    if char then
-        for _,p in ipairs(char:GetDescendants()) do
-            if p:IsA("BasePart") then
-                pcall(function() p.CustomPhysicalProperties=PhysicalProperties.new(0.01,0,0,0,0) end)
-            end
-        end
+-- ══════════════════════════════════════════════
+--  PLAYER ESP — Fixed WorldToViewport approach
+-- ══════════════════════════════════════════════
+local function ClearESP(p)
+    if S.ESPDrawings[p] then
+        for _,d in pairs(S.ESPDrawings[p]) do pcall(function()d:Remove()end) end
+        S.ESPDrawings[p]=nil
     end
-    if AEConns.fling then AEConns.fling:Disconnect() end
-    AEConns.fling=RunService.Heartbeat:Connect(function()
-        if not State.AntiFling then return end
-        local r=GetRoot(LocalPlayer) if not r then return end
-        if r.AssemblyLinearVelocity.Magnitude>200 then
-            r.AssemblyLinearVelocity=Vector3.zero
-            r.AssemblyAngularVelocity=Vector3.zero
-            r.CFrame=LastGoodCF
-            Library:Notification({Title="Anti-Fling",Description="Fling blocked.",Duration=2})
-        else LastGoodCF=r.CFrame end
-    end)
-end
-local function DisableAntiFling()
-    if AEConns.fling then AEConns.fling:Disconnect() AEConns.fling=nil end
 end
 
-local AntiKillConn
-local function EnableAntiKill()
-    local hum=GetHum(LocalPlayer) if not hum then return end
-    LastGoodHP=hum.Health
-    if AntiKillConn then AntiKillConn:Disconnect() end
-    AntiKillConn=hum.HealthChanged:Connect(function(hp)
-        if not State.AntiKill then return end
-        local h=GetHum(LocalPlayer) if not h then return end
-        local drop=LastGoodHP-hp
-        if drop>5 and hp>0 then h.Health=LastGoodHP
-            Library:Notification({Title="Anti-Kill",Description="Damage blocked ("..math.floor(drop).."hp).",Duration=2})
-        else LastGoodHP=hp end
-    end)
-end
-local function DisableAntiKill()
-    if AntiKillConn then AntiKillConn:Disconnect() AntiKillConn=nil end
-end
-
-local function EnableAntiTeleport()
-    local lastPos=nil
-    if AEConns.tp then AEConns.tp:Disconnect() end
-    AEConns.tp=RunService.Heartbeat:Connect(function()
-        if not State.AntiTeleport then return end
-        local r=GetRoot(LocalPlayer) if not r then lastPos=nil return end
-        if lastPos then
-            if (r.Position-lastPos).Magnitude>State.MaxTeleportDist and not State.FlyEnabled then
-                r.CFrame=CFrame.new(lastPos)
-                Library:Notification({Title="Anti-TP",Description="Teleport blocked.",Duration=2})
-            else lastPos=r.Position end
-        else lastPos=r.Position end
-    end)
-end
-local function DisableAntiTeleport()
-    if AEConns.tp then AEConns.tp:Disconnect() AEConns.tp=nil end
+local function BuildESP(p)
+    if p==LocalPlayer then return end
+    ClearESP(p)
+    S.ESPDrawings[p] = {
+        -- Outer box
+        Box     = ND("Square",{Visible=false,Thickness=1,Filled=false,Color=Color3.fromRGB(255,255,255)}),
+        BoxFill = ND("Square",{Visible=false,Filled=true,Color=Color3.fromRGB(0,0,0),Transparency=0.5}),
+        -- Health bar background
+        HpBG    = ND("Square",{Visible=false,Filled=true,Color=Color3.fromRGB(30,30,30)}),
+        -- Health bar fill
+        HpFill  = ND("Square",{Visible=false,Filled=true,Color=Color3.fromRGB(0,255,80)}),
+        -- Name above box
+        Name    = ND("Text",{Visible=false,Size=13,Font=2,Outline=true,Color=Color3.fromRGB(255,255,255),Center=true}),
+        -- Role tag
+        RoleTag = ND("Text",{Visible=false,Size=11,Font=2,Outline=true,Color=Color3.fromRGB(200,200,200),Center=true}),
+        -- Distance below box
+        Dist    = ND("Text",{Visible=false,Size=11,Font=2,Outline=true,Color=Color3.fromRGB(180,180,180),Center=true}),
+        -- Tracer from bottom of screen
+        Tracer  = ND("Line",{Visible=false,Thickness=1,Color=Color3.fromRGB(255,255,255)}),
+    }
 end
 
-local function EnableAntiNoclip()
-    if AEConns.nc then AEConns.nc:Disconnect() end
-    AEConns.nc=RunService.Heartbeat:Connect(function()
-        if not State.AntiNoclip then return end
-        local myR=GetRoot(LocalPlayer) if not myR then return end
-        for _,plr in ipairs(Players:GetPlayers()) do
-            if plr==LocalPlayer then continue end
-            local r=GetRoot(plr) if not r then continue end
-            if (r.Position-myR.Position).Magnitude<2 then
-                pcall(function() r.AssemblyLinearVelocity=(r.Position-myR.Position).Unit*50 end)
+local function UpdateESP(p)
+    local d=S.ESPDrawings[p]
+    if not d then return end
+    local char=Char(p); local root=Root(p); local hum=Hum(p)
+    if not S.ESP or not char or not root or not hum or hum.Health<=0 then
+        for _,v in pairs(d) do v.Visible=false end return
+    end
+
+    -- Get screen positions of head and feet
+    local head = char:FindFirstChild("Head")
+    local leftFoot = char:FindFirstChild("LeftFoot") or char:FindFirstChild("Left Leg")
+
+    local headPos = head and head.Position or (root.Position + Vector3.new(0,2.5,0))
+    local feetPos = leftFoot and leftFoot.Position or (root.Position - Vector3.new(0,3,0))
+    local rootPos = root.Position
+
+    local screenHead, headVisible = WTV(headPos)
+    local screenFeet, feetVisible = WTV(feetPos)
+    local screenRoot, rootVisible, rootDepth = WTV(rootPos)
+
+    -- Only draw if any part is on screen and in front of camera
+    if not rootVisible or rootDepth <= 0 then
+        for _,v in pairs(d) do v.Visible=false end return
+    end
+
+    local col = RoleCol(p)
+    local hp  = hum.Health
+    local mhp = math.max(hum.MaxHealth, 1)
+    local dist= math.floor(Dist(p))
+
+    -- Box dimensions from head to feet
+    local boxH = math.abs(screenFeet.Y - screenHead.Y)
+    if boxH < 10 then boxH = 10 end -- minimum box height
+    local boxW = boxH * 0.5
+    local boxX = screenRoot.X - boxW/2
+    local boxY = screenHead.Y
+
+    -- Box
+    d.Box.Position = Vector2.new(boxX, boxY)
+    d.Box.Size     = Vector2.new(boxW, boxH)
+    d.Box.Color    = col
+    d.Box.Visible  = true
+
+    -- Box fill
+    d.BoxFill.Position = Vector2.new(boxX, boxY)
+    d.BoxFill.Size     = Vector2.new(boxW, boxH)
+    d.BoxFill.Visible  = Library.Flags["ESPBoxFill"]==true
+
+    -- Health bar (3px wide, left of box)
+    local hpH    = math.floor(boxH * math.clamp(hp/mhp, 0, 1))
+    local hpCol  = Color3.fromRGB(
+        math.floor(255*(1-(hp/mhp))),
+        math.floor(255*(hp/mhp)),
+        0
+    )
+    d.HpBG.Position = Vector2.new(boxX-5, boxY)
+    d.HpBG.Size     = Vector2.new(3, boxH)
+    d.HpBG.Visible  = true
+
+    d.HpFill.Position = Vector2.new(boxX-5, boxY+boxH-hpH)
+    d.HpFill.Size     = Vector2.new(3, hpH)
+    d.HpFill.Color    = hpCol
+    d.HpFill.Visible  = true
+
+    -- Name (above box)
+    d.Name.Text     = p.Name
+    d.Name.Color    = col
+    d.Name.Position = Vector2.new(screenRoot.X, boxY - 16)
+    d.Name.Visible  = Library.Flags["ESPNames"]~=false
+
+    -- Role tag
+    d.RoleTag.Text     = "["..Role(p).."]"
+    d.RoleTag.Color    = col
+    d.RoleTag.Position = Vector2.new(screenRoot.X, boxY - 29)
+    d.RoleTag.Visible  = Library.Flags["ESPRoleTags"]==true
+
+    -- Distance (below box)
+    d.Dist.Text     = dist.."m"
+    d.Dist.Position = Vector2.new(screenRoot.X, boxY+boxH+3)
+    d.Dist.Visible  = Library.Flags["ESPDistance"]~=false
+
+    -- Tracer from center-bottom of screen to player
+    d.Tracer.From  = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y)
+    d.Tracer.To    = Vector2.new(screenRoot.X, screenRoot.Y)
+    d.Tracer.Color = col
+    d.Tracer.Visible = Library.Flags["ESPTracers"]==true
+end
+
+-- ── World ESP ────────────────────────────────
+local coinESPClock = 0
+local function UpdateWorldESP()
+    -- Throttle to every 0.5s to save performance
+    if tick() - coinESPClock < 0.5 then return end
+    coinESPClock = tick()
+
+    ClearDraw(S.CoinDraw)
+    ClearDraw(S.GunDraw)
+
+    local map = Workspace:FindFirstChild("Map") or Workspace
+    for _,obj in ipairs(map:GetDescendants()) do
+        -- Coins
+        if S.CoinESP and obj:IsA("BasePart") and obj.Name:lower():find("coin") then
+            local pos,on = WTV(obj.Position)
+            if on then
+                table.insert(S.CoinDraw, ND("Text",{
+                    Text="● Coin", Position=pos-Vector2.new(0,8),
+                    Color=Color3.fromRGB(255,220,30), Size=13, Font=2, Outline=true, Visible=true, Center=true
+                }))
             end
         end
-    end)
-end
-local function DisableAntiNoclip()
-    if AEConns.nc then AEConns.nc:Disconnect() AEConns.nc=nil end
-end
-
-local SpeedNotifCD={}
-local function EnableAntiSpeed()
-    if AEConns.spd then AEConns.spd:Disconnect() end
-    AEConns.spd=RunService.Heartbeat:Connect(function()
-        if not State.AntiSpeedHack then return end
-        local myR=GetRoot(LocalPlayer) if not myR then return end
-        for _,plr in ipairs(Players:GetPlayers()) do
-            if plr==LocalPlayer then continue end
-            local r=GetRoot(plr) if not r then continue end
-            local vel=r.AssemblyLinearVelocity.Magnitude
-            local dist=(r.Position-myR.Position).Magnitude
-            if vel>80 and dist<30 then
-                local now=tick()
-                if not SpeedNotifCD[plr] or now-SpeedNotifCD[plr]>5 then
-                    SpeedNotifCD[plr]=now
-                    Library:Notification({Title="Anti-Speed",Description=plr.Name.." speedhacking nearby.",Duration=3})
+        -- Guns / dropped weapons
+        if S.GunESP then
+            local handle = obj:FindFirstChild("Handle")
+            if handle and (obj.Name:lower():find("gun") or obj.Name:lower():find("knife") or obj.Name:lower():find("sheriff")) then
+                local pos,on = WTV(handle.Position)
+                if on then
+                    table.insert(S.GunDraw, ND("Text",{
+                        Text="⚔ "..obj.Name, Position=pos-Vector2.new(0,8),
+                        Color=Color3.fromRGB(80,200,255), Size=13, Font=2, Outline=true, Visible=true, Center=true
+                    }))
                 end
             end
         end
-    end)
-end
-local function DisableAntiSpeed()
-    if AEConns.spd then AEConns.spd:Disconnect() AEConns.spd=nil end
-end
-
-local function ReapplyAntiExploit()
-    task.wait(0.5)
-    if State.AntiFling then EnableAntiFling() end
-    if State.AntiKill then EnableAntiKill() end
-    if State.AntiTeleport then EnableAntiTeleport() end
-    if State.AntiNoclip then EnableAntiNoclip() end
-    if State.AntiSpeedHack then EnableAntiSpeed() end
-end
-LocalPlayer.CharacterAdded:Connect(ReapplyAntiExploit)
-
--- ══════════════════════════════════════════
--- ESP
--- ══════════════════════════════════════════
-local function ClearESP(plr)
-    if State.ESPDrawings[plr] then
-        for _,d in pairs(State.ESPDrawings[plr]) do pcall(function()d:Remove()end) end
-        State.ESPDrawings[plr]=nil
-    end
-end
-local function BuildESP(plr)
-    if plr==LocalPlayer then return end
-    ClearESP(plr)
-    State.ESPDrawings[plr]={
-        Box    =ND("Square",{Visible=false,Thickness=1,Filled=false,Color=Color3.fromRGB(255,255,255)}),
-        BoxFill=ND("Square",{Visible=false,Thickness=1,Filled=true,Color=Color3.fromRGB(0,0,0),Transparency=0.4}),
-        Name   =ND("Text",  {Visible=false,Size=13,Font=2,Outline=true,Color=Color3.fromRGB(255,255,255)}),
-        Dist   =ND("Text",  {Visible=false,Size=11,Font=2,Outline=true,Color=Color3.fromRGB(200,200,200)}),
-        Tracer =ND("Line",  {Visible=false,Thickness=1,Color=Color3.fromRGB(255,255,255)}),
-        HpBar  =ND("Square",{Visible=false,Thickness=1,Filled=true,Color=Color3.fromRGB(0,255,0)}),
-        HpBG   =ND("Square",{Visible=false,Thickness=1,Filled=true,Color=Color3.fromRGB(0,0,0),Transparency=0.5}),
-    }
-end
-local function UpdateESP(plr)
-    local d=State.ESPDrawings[plr] if not d then return end
-    local char=GetChar(plr) local root=GetRoot(plr) local hum=GetHum(plr)
-    if not State.ESPEnabled or not char or not root or not hum or hum.Health<=0 then
-        for _,v in pairs(d) do v.Visible=false end return
-    end
-    local head=char:FindFirstChild("Head")
-    local lfoot=char:FindFirstChild("LeftFoot") or root
-    local tp,_=WTV(head and head.Position or root.Position+Vector3.new(0,3,0))
-    local bp,_=WTV(lfoot and lfoot.Position or root.Position-Vector3.new(0,3,0))
-    local rp,ron=WTV(root.Position)
-    if not ron then for _,v in pairs(d) do v.Visible=false end return end
-    local h=math.abs(bp.Y-tp.Y) local w=h*0.4
-    local x=rp.X-w/2 local y=tp.Y
-    local col=RoleColor(plr)
-    local dist=(root.Position-GetRoot(LocalPlayer).Position).Magnitude
-    local hp=hum.Health local mhp=hum.MaxHealth
-    d.BoxFill.Position=Vector2.new(x,y) d.BoxFill.Size=Vector2.new(w,h) d.BoxFill.Visible=Library.Flags["ESPBoxFill"]==true
-    d.Box.Color=col d.Box.Position=Vector2.new(x,y) d.Box.Size=Vector2.new(w,h) d.Box.Visible=true
-    d.Name.Text=plr.Name d.Name.Color=col d.Name.Position=Vector2.new(rp.X,y-16) d.Name.Visible=Library.Flags["ESPNames"]~=false
-    d.Dist.Text=math.floor(dist).."m" d.Dist.Position=Vector2.new(rp.X,y+h+2) d.Dist.Visible=Library.Flags["ESPDistance"]~=false
-    d.Tracer.From=Vector2.new(Camera.ViewportSize.X/2,Camera.ViewportSize.Y) d.Tracer.To=Vector2.new(rp.X,rp.Y) d.Tracer.Color=col d.Tracer.Visible=Library.Flags["ESPTracers"]==true
-    local hpPct=math.clamp(hp/mhp,0,1) local hbH=h*hpPct
-    d.HpBG.Position=Vector2.new(x-5,y) d.HpBG.Size=Vector2.new(3,h) d.HpBG.Visible=true
-    d.HpBar.Position=Vector2.new(x-5,y+h-hbH) d.HpBar.Size=Vector2.new(3,hbH)
-    d.HpBar.Color=Color3.fromRGB(255-(hpPct*255),hpPct*255,0) d.HpBar.Visible=true
-end
-
-local function UpdateWorldESP()
-    RemDraw(State.CoinDrawings)
-    if State.CoinESP then
-        local map=Workspace:FindFirstChild("Map") or Workspace
-        for _,obj in ipairs(map:GetDescendants()) do
-            if obj:IsA("BasePart") and obj.Name:lower():find("coin") then
-                local pos,on=WTV(obj.Position)
-                if on then table.insert(State.CoinDrawings,ND("Text",{Text="Coin",Position=pos,Color=Color3.fromRGB(255,220,30),Size=13,Font=2,Outline=true,Visible=true})) end
-            end
-        end
-    end
-    RemDraw(State.GunDrawings)
-    if State.GunESP then
-        local map=Workspace:FindFirstChild("Map") or Workspace
-        for _,obj in ipairs(map:GetDescendants()) do
-            local part=obj:FindFirstChild("Handle")
-            if part and (obj.Name:lower():find("gun") or obj.Name:lower():find("knife")) then
-                local pos,on=WTV(part.Position)
-                if on then table.insert(State.GunDrawings,ND("Text",{Text=obj.Name,Position=pos,Color=Color3.fromRGB(80,200,255),Size=13,Font=2,Outline=true,Visible=true})) end
-            end
-        end
     end
 end
 
--- ══════════════════════════════════════════
--- AIMBOT
--- ══════════════════════════════════════════
+-- ══════════════════════════════════════════════
+--  AIMBOT — fixed FOV check
+-- ══════════════════════════════════════════════
 local function GetTarget()
-    local best,bestD=nil,State.AimbotFOV
-    local center=Vector2.new(Camera.ViewportSize.X/2,Camera.ViewportSize.Y/2)
-    for _,plr in ipairs(Players:GetPlayers()) do
-        if plr==LocalPlayer or not IsAlive(plr) then continue end
-        if Library.Flags["AimbotMurdererOnly"] then
-            local r=GetRole(plr)
-            if r~="Murderer" and r~="murderer" then continue end
+    local best, bestDist = nil, S.AimFOV
+    local center = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
+
+    for _,p in ipairs(Players:GetPlayers()) do
+        if p==LocalPlayer or not Alive(p) then continue end
+        if S.AimMurdOnly then
+            local r=Role(p):lower()
+            if not r:find("murder") then continue end
         end
-        local char=GetChar(plr) if not char then continue end
-        local part=char:FindFirstChild(State.AimbotPart) or GetRoot(plr)
+        local c=Char(p); if not c then continue end
+        local part=c:FindFirstChild(S.AimPart) or Root(p)
         if not part then continue end
-        local p2,on=WTV(part.Position)
-        if not on then continue end
-        local d=(center-p2).Magnitude
-        if d<bestD then bestD=d best=part end
+        local p2,on,depth = WTV(part.Position)
+        if not on or depth<=0 then continue end
+        local screenDist=(center-p2).Magnitude
+        if screenDist < bestDist then
+            bestDist=screenDist; best=part
+        end
     end
     return best
 end
 
+-- Silent aim override
 local SilentConn
 local function ApplySilentAim()
     if SilentConn then SilentConn:Disconnect() SilentConn=nil end
-    if not State.SilentAim then return end
-    SilentConn=RunService.RenderStepped:Connect(function()
+    if not S.SilentAim then return end
+    SilentConn = RunService.RenderStepped:Connect(function()
         local t=GetTarget()
-        if t then pcall(function() Mouse.Hit=CFrame.new(t.Position) end) end
+        if t then pcall(function() LocalPlayer:GetMouse().Hit=CFrame.new(t.Position) end) end
     end)
 end
 
--- ══════════════════════════════════════════
--- MOVEMENT
--- ══════════════════════════════════════════
-local function SetSpeed(v) local h=GetHum(LocalPlayer) if h then h.WalkSpeed=v end end
-
-local function StartFly()
-    local root=GetRoot(LocalPlayer) if not root then return end
-    if State.FlyBody then
-        pcall(function() State.FlyBody.BV:Destroy() State.FlyBody.BG:Destroy() end)
-        State.FlyBody=nil
-    end
-    local bv=Instance.new("BodyVelocity") bv.MaxForce=Vector3.new(1e9,1e9,1e9) bv.Velocity=Vector3.zero bv.Parent=root
-    local bg=Instance.new("BodyGyro") bg.MaxTorque=Vector3.new(1e9,1e9,1e9) bg.CFrame=root.CFrame bg.Parent=root
-    State.FlyBody={BV=bv,BG=bg}
-end
-local function StopFly()
-    if State.FlyBody then pcall(function() State.FlyBody.BV:Destroy() State.FlyBody.BG:Destroy() end) State.FlyBody=nil end
-    local h=GetHum(LocalPlayer) if h then h.PlatformStand=false end
-end
-
--- ══════════════════════════════════════════
--- DESYNC
--- ══════════════════════════════════════════
-local DesyncConn
-local function ApplyDesync()
-    if DesyncConn then DesyncConn:Disconnect() DesyncConn=nil end
-    if not State.DesyncEnabled then return end
-    DesyncConn=RunService.Heartbeat:Connect(function()
-        local root=GetRoot(LocalPlayer) if not root then return end
-        local orig=root.CFrame
-        local off=Vector3.new(math.random(-State.DesyncStrength,State.DesyncStrength),0,math.random(-State.DesyncStrength,State.DesyncStrength))
-        root.CFrame=orig*CFrame.new(off) task.wait() pcall(function() root.CFrame=orig end)
-    end)
-end
-
--- ══════════════════════════════════════════
--- KILL AURA
--- ══════════════════════════════════════════
-task.spawn(function()
-    while true do task.wait(0.1)
-        if not State.KillAura then continue end
-        local role=GetRole(LocalPlayer)
-        if role~="Murderer" and role~="murderer" then continue end
-        for _,plr in ipairs(Players:GetPlayers()) do
-            if plr==LocalPlayer or not IsAlive(plr) then continue end
-            if Dist(plr)<=State.KillAuraRange then
-                local remote=ReplicatedStorage:FindFirstChild("KillPlayer") or ReplicatedStorage:FindFirstChildOfClass("RemoteEvent")
-                if remote then pcall(function() remote:FireServer(plr) end) end
-                local char=GetChar(plr) local mychar=GetChar(LocalPlayer)
-                if char and mychar then
-                    local knife=mychar:FindFirstChild("Knife")
-                    if knife then local h=knife:FindFirstChild("Handle") if h then h.CFrame=char:GetPivot() end end
-                end
+-- ══════════════════════════════════════════════
+--  ANTI-EXPLOIT — rewritten
+-- ══════════════════════════════════════════════
+local flingNotifCD = 0
+local function EnableAntiFling()
+    if S.AEConns.fling then S.AEConns.fling:Disconnect() end
+    -- Make character massless so velocity flings do nothing
+    local char=Char(LocalPlayer)
+    if char then
+        for _,p in ipairs(char:GetDescendants()) do
+            if p:IsA("BasePart") then
+                pcall(function()
+                    p.CustomPhysicalProperties=PhysicalProperties.new(0.01,0,0,0,0)
+                end)
             end
         end
     end
-end)
+    S.AEConns.fling = RunService.Heartbeat:Connect(function()
+        if not S.AntiFling then return end
+        local r=Root(LocalPlayer); if not r then return end
+        local vel=r.AssemblyLinearVelocity
+        if vel.Magnitude > 250 then
+            r.AssemblyLinearVelocity = Vector3.zero
+            r.AssemblyAngularVelocity = Vector3.zero
+            r.CFrame = S.LastGoodCF
+            if tick()-flingNotifCD > 3 then
+                flingNotifCD=tick()
+                Library:Notification({Title="Anti-Fling",Description="Fling attempt blocked!",Duration=2})
+            end
+        else
+            S.LastGoodCF = r.CFrame
+        end
+    end)
+end
 
--- ══════════════════════════════════════════
--- AUTO COIN
--- ══════════════════════════════════════════
+local AntiKillConn
+local function EnableAntiKill()
+    if AntiKillConn then AntiKillConn:Disconnect() end
+    local hum=Hum(LocalPlayer); if not hum then return end
+    S.LastGoodHP = hum.Health
+    AntiKillConn = hum.HealthChanged:Connect(function(hp)
+        if not S.AntiKill then S.LastGoodHP=hp return end
+        local hm=Hum(LocalPlayer); if not hm then return end
+        local drop = S.LastGoodHP - hp
+        if drop > 8 and hp > 0 then
+            hm.Health = S.LastGoodHP
+            Library:Notification({Title="Anti-Kill",Description="Blocked "..math.floor(drop).." damage",Duration=2})
+        else
+            S.LastGoodHP = hp
+        end
+    end)
+end
+
+local tpLastPos
+local tpNotifCD = 0
+local function EnableAntiTp()
+    if S.AEConns.tp then S.AEConns.tp:Disconnect() end
+    tpLastPos = nil
+    S.AEConns.tp = RunService.Heartbeat:Connect(function()
+        if not S.AntiTp then tpLastPos=nil return end
+        local r=Root(LocalPlayer); if not r then tpLastPos=nil return end
+        if tpLastPos then
+            local moved=(r.Position-tpLastPos).Magnitude
+            if moved > S.MaxTpDist and not S.Fly then
+                r.CFrame = CFrame.new(tpLastPos)
+                if tick()-tpNotifCD > 3 then
+                    tpNotifCD=tick()
+                    Library:Notification({Title="Anti-Teleport",Description="Teleport blocked",Duration=2})
+                end
+            else tpLastPos=r.Position end
+        else tpLastPos=r.Position end
+    end)
+end
+
+local spdNotifCD = {}
+local function EnableAntiSpeed()
+    if S.AEConns.spd then S.AEConns.spd:Disconnect() end
+    S.AEConns.spd = RunService.Heartbeat:Connect(function()
+        if not S.AntiSpd then return end
+        local myR=Root(LocalPlayer); if not myR then return end
+        for _,p in ipairs(Players:GetPlayers()) do
+            if p==LocalPlayer then continue end
+            local r=Root(p); if not r then continue end
+            local vel=r.AssemblyLinearVelocity.Magnitude
+            local d=(r.Position-myR.Position).Magnitude
+            if vel>90 and d<35 then
+                local now=tick()
+                if not spdNotifCD[p] or now-spdNotifCD[p]>5 then
+                    spdNotifCD[p]=now
+                    Library:Notification({Title="⚡ Speedhack",Description=p.Name.." is speed hacking near you",Duration=3})
+                end
+            end
+        end
+    end)
+end
+
+local function ReapplyAntiExploit()
+    task.wait(1)
+    if S.AntiFling  then EnableAntiFling()  end
+    if S.AntiKill   then EnableAntiKill()   end
+    if S.AntiTp     then EnableAntiTp()     end
+    if S.AntiSpd    then EnableAntiSpeed()  end
+end
+LocalPlayer.CharacterAdded:Connect(ReapplyAntiExploit)
+
+-- ══════════════════════════════════════════════
+--  MOVEMENT
+-- ══════════════════════════════════════════════
+local function SetSpeed(v) local h=Hum(LocalPlayer) if h then h.WalkSpeed=v end end
+
+local function StartFly()
+    local r=Root(LocalPlayer); if not r then return end
+    if S.FlyBody then pcall(function() S.FlyBody.BV:Destroy() S.FlyBody.BG:Destroy() end) S.FlyBody=nil end
+    local bv=Instance.new("BodyVelocity"); bv.MaxForce=Vector3.new(1e9,1e9,1e9); bv.Velocity=Vector3.zero; bv.Parent=r
+    local bg=Instance.new("BodyGyro"); bg.MaxTorque=Vector3.new(1e9,1e9,1e9); bg.CFrame=r.CFrame; bg.Parent=r
+    S.FlyBody={BV=bv,BG=bg}
+end
+local function StopFly()
+    if S.FlyBody then pcall(function() S.FlyBody.BV:Destroy() S.FlyBody.BG:Destroy() end) S.FlyBody=nil end
+    local h=Hum(LocalPlayer); if h then h.PlatformStand=false end
+end
+
+-- ══════════════════════════════════════════════
+--  KILL AURA — MM2 specific
+-- ══════════════════════════════════════════════
+-- MM2 uses a touch-based knife mechanic.
+-- We move our knife handle to the target's position.
+local function DoKillAura()
+    task.spawn(function()
+        while true do
+            task.wait(0.08)
+            if not S.KillAura then continue end
+            local roleStr=Role(LocalPlayer):lower()
+            if not roleStr:find("murder") then continue end
+
+            local myChar=Char(LocalPlayer); if not myChar then continue end
+
+            -- Find knife in character
+            local knife = myChar:FindFirstChild("Knife")
+                       or myChar:FindFirstChild("MM2Knife")
+                       or myChar:FindFirstChildWhichIsA("Tool")
+
+            local handle = knife and (knife:FindFirstChild("Handle") or (knife:IsA("BasePart") and knife))
+
+            for _,p in ipairs(Players:GetPlayers()) do
+                if p==LocalPlayer or not Alive(p) then continue end
+                if Dist(p) <= S.KillRange then
+                    local targetRoot = Root(p)
+                    if targetRoot then
+                        -- Method 1: teleport knife handle
+                        if handle then
+                            pcall(function() handle.CFrame=targetRoot.CFrame end)
+                        end
+                        -- Method 2: fire kill remote if it exists
+                        local remote = ReplicatedStorage:FindFirstChild("KillPlayer")
+                                    or ReplicatedStorage:FindFirstChild("RemoteFunction")
+                        if remote and remote:IsA("RemoteEvent") then
+                            pcall(function() remote:FireServer(p) end)
+                        end
+                        -- Method 3: teleport us on top of them briefly
+                        local myRoot = Root(LocalPlayer)
+                        if myRoot and not handle then
+                            myRoot.CFrame = targetRoot.CFrame
+                        end
+                    end
+                end
+            end
+        end
+    end)
+end
+DoKillAura()
+
+-- ══════════════════════════════════════════════
+--  AUTO COIN FARM
+-- ══════════════════════════════════════════════
 task.spawn(function()
-    while true do task.wait(0.05)
-        if not State.AutoCoin then continue end
-        local root=GetRoot(LocalPlayer) if not root then continue end
+    while true do
+        task.wait(0.05)
+        if not S.AutoCoin then continue end
+        local r=Root(LocalPlayer); if not r then continue end
         local map=Workspace:FindFirstChild("Map") or Workspace
         local closest,closestD=nil,math.huge
         for _,obj in ipairs(map:GetDescendants()) do
             if obj:IsA("BasePart") and obj.Name:lower():find("coin") then
-                local d=(obj.Position-root.Position).Magnitude
+                local d=(obj.Position-r.Position).Magnitude
                 if d<closestD then closestD=d closest=obj end
             end
         end
-        if closest then root.CFrame=CFrame.new(closest.Position) end
+        if closest then r.CFrame=CFrame.new(closest.Position) end
     end
 end)
 
--- ══════════════════════════════════════════
--- FULLBRIGHT
--- ══════════════════════════════════════════
-local OrigBright
-local function SetFullbright(on)
-    local L=game:GetService("Lighting")
-    if on then OrigBright=L.Brightness L.Brightness=10 L.FogEnd=1e6 L.GlobalShadows=false
-    else L.Brightness=OrigBright or 1 L.GlobalShadows=true end
+-- ══════════════════════════════════════════════
+--  DESYNC
+-- ══════════════════════════════════════════════
+local DesyncConn
+local function ApplyDesync()
+    if DesyncConn then DesyncConn:Disconnect() DesyncConn=nil end
+    if not S.Desync then return end
+    DesyncConn=RunService.Heartbeat:Connect(function()
+        local r=Root(LocalPlayer); if not r then return end
+        local orig=r.CFrame
+        local off=Vector3.new(math.random(-S.DesyncStr,S.DesyncStr),0,math.random(-S.DesyncStr,S.DesyncStr))
+        r.CFrame=orig*CFrame.new(off)
+        task.wait()
+        pcall(function() r.CFrame=orig end)
+    end)
 end
 
--- ══════════════════════════════════════════
--- PLAYER HOOKS
--- ══════════════════════════════════════════
-for _,p in ipairs(Players:GetPlayers()) do BuildESP(p) end
-Players.PlayerAdded:Connect(function(p)
-    p.CharacterAdded:Connect(function() task.wait(1) BuildESP(p) end)
-    BuildESP(p)
-end)
-Players.PlayerRemoving:Connect(ClearESP)
+-- ── Fullbright ───────────────────────────────
+local origBright
+local function SetFullbright(on)
+    local L=game:GetService("Lighting")
+    if on then origBright=L.Brightness; L.Brightness=10; L.FogEnd=1e6; L.GlobalShadows=false
+    else L.Brightness=origBright or 2; L.GlobalShadows=true end
+end
 
--- ══════════════════════════════════════════
--- RENDER LOOP
--- ══════════════════════════════════════════
-local fpsCount=0 local fpsClock=tick()
+-- ══════════════════════════════════════════════
+--  MAIN RENDER LOOP
+-- ══════════════════════════════════════════════
+local fpsCount=0; local fpsClock=tick()
+
 RunService.RenderStepped:Connect(function()
+    -- FPS
     fpsCount+=1
-    if tick()-fpsClock>=1 then fpsDisplay=fpsCount fpsCount=0 fpsClock=tick() HUD.FPS.Text="FPS: "..fpsDisplay end
-    if State.AimbotEnabled and UserInputService:IsMouseButtonPressed(Enum.UserInputButton.MouseButton2) then
-        local t=GetTarget()
-        if t then Camera.CFrame=Camera.CFrame:Lerp(CFrame.new(Camera.CFrame.Position,t.Position),State.AimbotSmooth) end
+    if tick()-fpsClock>=1 then
+        fpsDisp=fpsCount; fpsCount=0; fpsClock=tick()
+        HUD.FPS.Text="FPS: "..fpsDisp
     end
-    if State.FlyEnabled and State.FlyBody then
-        local root=GetRoot(LocalPlayer) if root then
-            local h=GetHum(LocalPlayer) if h then h.PlatformStand=true end
-            local dir=Vector3.zero local cf=Camera.CFrame
+
+    -- Aimbot
+    if S.Aim and UserInputService:IsMouseButtonPressed(Enum.UserInputButton.MouseButton2) then
+        local t=GetTarget()
+        if t then
+            local cf=CFrame.new(Camera.CFrame.Position, t.Position)
+            Camera.CFrame=Camera.CFrame:Lerp(cf, S.AimSmooth)
+        end
+    end
+
+    -- FOV circle — always update position and radius
+    FOVCircle.Position = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
+    FOVCircle.Radius   = S.AimFOV
+    FOVCircle.Visible  = S.Aim
+
+    -- Fly
+    if S.Fly and S.FlyBody then
+        local r=Root(LocalPlayer)
+        if r then
+            local h=Hum(LocalPlayer); if h then h.PlatformStand=true end
+            local dir=Vector3.zero; local cf=Camera.CFrame
             if UserInputService:IsKeyDown(Enum.KeyCode.W) then dir+=-cf.LookVector end
             if UserInputService:IsKeyDown(Enum.KeyCode.S) then dir-=-cf.LookVector end
             if UserInputService:IsKeyDown(Enum.KeyCode.A) then dir+=-cf.RightVector end
             if UserInputService:IsKeyDown(Enum.KeyCode.D) then dir+=cf.RightVector end
             if UserInputService:IsKeyDown(Enum.KeyCode.Space) then dir+=Vector3.new(0,1,0) end
             if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then dir-=Vector3.new(0,1,0) end
-            State.FlyBody.BV.Velocity=dir.Magnitude>0 and dir.Unit*State.FlySpeed or Vector3.zero
-            State.FlyBody.BG.CFrame=cf
+            S.FlyBody.BV.Velocity=dir.Magnitude>0 and dir.Unit*S.FlySpeed or Vector3.zero
+            S.FlyBody.BG.CFrame=cf
         end
     end
-    if State.SpeedEnabled then SetSpeed(State.SpeedValue) end
-    if State.BunnyHop then local h=GetHum(LocalPlayer) if h and h.FloorMaterial~=Enum.Material.Air then h.Jump=true end end
-    if State.NoclipEnabled then local char=GetChar(LocalPlayer) if char then for _,p in ipairs(char:GetDescendants()) do if p:IsA("BasePart") then p.CanCollide=false end end end end
-    if State.InfiniteStamina then local char=GetChar(LocalPlayer) if char then local s=char:FindFirstChild("Stamina") if s then s.Value=100 end end end
-    if State.GodMode then local h=GetHum(LocalPlayer) if h then h.Health=h.MaxHealth end end
+
+    -- Speed
+    if S.Speed then SetSpeed(S.SpeedVal) end
+
+    -- Bhop
+    if S.Bhop then
+        local h=Hum(LocalPlayer)
+        if h and h.FloorMaterial~=Enum.Material.Air then h.Jump=true end
+    end
+
+    -- Noclip
+    if S.Noclip then
+        local c=Char(LocalPlayer)
+        if c then for _,p in ipairs(c:GetDescendants()) do if p:IsA("BasePart") then p.CanCollide=false end end end
+    end
+
+    -- Inf Stamina
+    if S.InfStam then
+        local c=Char(LocalPlayer)
+        if c then
+            local stam=c:FindFirstChild("Stamina") or c:FindFirstChild("stamina")
+            if stam and stam:IsA("NumberValue") then stam.Value=100 end
+        end
+    end
+
+    -- God Mode
+    if S.GodMode then
+        local h=Hum(LocalPlayer); if h then h.Health=h.MaxHealth end
+    end
+
+    -- ESP updates
     for _,p in ipairs(Players:GetPlayers()) do UpdateESP(p) end
     UpdateWorldESP()
     UpdateHUD()
-    FOVCircle.Visible=State.AimbotEnabled
-    FOVCircle.Radius=State.AimbotFOV
-    FOVCircle.Position=Vector2.new(Camera.ViewportSize.X/2,Camera.ViewportSize.Y/2)
 end)
 
--- ══════════════════════════════════════════
--- KEYBIND LIST
--- ══════════════════════════════════════════
-local KeybindList=Library:KeybindList("MM2 Hub Keybinds")
+-- ══════════════════════════════════════════════
+--  PLAYER HOOKS
+-- ══════════════════════════════════════════════
+for _,p in ipairs(Players:GetPlayers()) do BuildESP(p) end
+Players.PlayerAdded:Connect(function(p)
+    p.CharacterAdded:Connect(function() task.wait(1) BuildESP(p) end)
+    BuildESP(p)
+end)
+Players.PlayerRemoving:Connect(function(p) ClearESP(p) end)
 
--- ══════════════════════════════════════════
--- PAGES
--- ══════════════════════════════════════════
+-- ══════════════════════════════════════════════
+--  KEYBIND LIST
+-- ══════════════════════════════════════════════
+local KeybindList = Library:KeybindList("MM2 Hub Binds")
+
+-- ══════════════════════════════════════════════
+--  ██ PAGE: VISUALS
+-- ══════════════════════════════════════════════
 local VisualsPage=Window:Page({Name="Visuals",Icon="100050851789190"})
-local ESPSec=VisualsPage:Section({Name="Player ESP",Side=1,Icon="117786983271442"})
-ESPSec:Toggle({Name="Enable ESP",Flag="ESPEnabled",Default=false,Callback=function(v) State.ESPEnabled=v end})
+Window:Category("ESP")
+
+local ESPSec=VisualsPage:Section({Name="Player ESP",Side=1,Icon="117786983271442",Description="See players through walls"})
+ESPSec:Toggle({Name="Enable ESP",Flag="ESP",Default=false,Callback=function(v) S.ESP=v end})
 ESPSec:Toggle({Name="Show Names",Flag="ESPNames",Default=true,Callback=function()end})
+ESPSec:Toggle({Name="Show Role Tag",Flag="ESPRoleTags",Default=true,Callback=function()end})
 ESPSec:Toggle({Name="Show Distance",Flag="ESPDistance",Default=true,Callback=function()end})
 ESPSec:Toggle({Name="Tracers",Flag="ESPTracers",Default=false,Callback=function()end})
 ESPSec:Toggle({Name="Box Fill",Flag="ESPBoxFill",Default=false,Callback=function()end})
-local WorldSec=VisualsPage:Section({Name="World ESP",Side=2,Icon="122669828593160"})
-WorldSec:Toggle({Name="Coin ESP",Flag="CoinESP",Default=false,Callback=function(v) State.CoinESP=v end})
-WorldSec:Toggle({Name="Gun ESP",Flag="GunESP",Default=false,Callback=function(v) State.GunESP=v end})
-local HUDSec=VisualsPage:Section({Name="HUD",Side=2,Icon="73789337996373"})
-HUDSec:Toggle({Name="Show Info HUD",Flag="ShowHUD",Default=true,Callback=function(v) State.ShowHUD=v end})
+
+local WorldSec=VisualsPage:Section({Name="World ESP",Side=1,Icon="122669828593160"})
+WorldSec:Toggle({Name="Coin ESP",Flag="CoinESP",Default=false,Callback=function(v) S.CoinESP=v end})
+WorldSec:Toggle({Name="Gun / Drop ESP",Flag="GunESP",Default=false,Callback=function(v) S.GunESP=v end})
+
+local HUDSec=VisualsPage:Section({Name="HUD & Visual",Side=2,Icon="73789337996373"})
+HUDSec:Toggle({Name="Show Info HUD",Flag="ShowHUD",Default=true,Callback=function(v) S.ShowHUD=v end})
 HUDSec:Toggle({Name="Fullbright",Flag="FullBright",Default=false,Callback=function(v) SetFullbright(v) end})
 
+-- ESP Color pickers per role
+local ColorSec=VisualsPage:Section({Name="ESP Colors",Side=2,Icon="100050851789190",Description="Per-role box color"})
+ColorSec:Label("Innocent Color"):Colorpicker({
+    Flag="ESPColorInnocent",Default=Color3.fromRGB(100,255,100),
+    Callback=function(c) S.ESPColor_Innocent=c end
+})
+ColorSec:Label("Murderer Color"):Colorpicker({
+    Flag="ESPColorMurderer",Default=Color3.fromRGB(255,60,60),
+    Callback=function(c) S.ESPColor_Murderer=c end
+})
+ColorSec:Label("Sheriff Color"):Colorpicker({
+    Flag="ESPColorSheriff",Default=Color3.fromRGB(80,140,255),
+    Callback=function(c) S.ESPColor_Sheriff=c end
+})
+
+-- ══════════════════════════════════════════════
+--  ██ PAGE: COMBAT
+-- ══════════════════════════════════════════════
 local CombatPage=Window:Page({Name="Combat",Icon="121760666525660"})
-local AimbotSec=CombatPage:Section({Name="Aimbot",Side=1,Icon="117786983271442"})
-AimbotSec:Toggle({Name="Enable Aimbot",Flag="AimbotEnabled",Default=false,Callback=function(v) State.AimbotEnabled=v FOVCircle.Visible=v end})
-AimbotSec:Toggle({Name="Silent Aim",Flag="SilentAim",Default=false,Callback=function(v) State.SilentAim=v ApplySilentAim() end})
-AimbotSec:Toggle({Name="Murderer Only",Flag="AimbotMurdererOnly",Default=true,Callback=function()end})
-AimbotSec:Dropdown({Name="Target Part",Flag="AimbotPart",Default="Head",Items={"Head","HumanoidRootPart","UpperTorso","Neck"},Callback=function(v) State.AimbotPart=v end})
-AimbotSec:Slider({Name="FOV Radius",Flag="AimbotFOV",Default=120,Min=10,Max=500,Decimals=1,Callback=function(v) State.AimbotFOV=v end})
-AimbotSec:Slider({Name="Smoothness",Flag="AimbotSmooth",Default=0.15,Min=0.01,Max=1,Decimals=0.01,Suffix="x",Callback=function(v) State.AimbotSmooth=v end})
-local KillSec=CombatPage:Section({Name="Kill Aura",Side=2,Icon="100050851789190"})
-KillSec:Toggle({Name="Kill Aura",Flag="KillAura",Default=false,Callback=function(v) State.KillAura=v end}):SubKeybind({Flag="KillAuraKey",Default=Enum.KeyCode.F})
-KillSec:Slider({Name="Kill Range",Flag="KillAuraRange",Default=15,Min=1,Max=60,Decimals=1,Suffix="st",Callback=function(v) State.KillAuraRange=v end})
 
+local AimSec=CombatPage:Section({Name="Aimbot",Side=1,Icon="117786983271442",Description="Hold RMB to lock on"})
+AimSec:Toggle({Name="Enable Aimbot",Flag="Aim",Default=false,Callback=function(v) S.Aim=v FOVCircle.Visible=v end})
+AimSec:Toggle({Name="Silent Aim",Flag="SilentAim",Default=false,Callback=function(v) S.SilentAim=v ApplySilentAim() end})
+AimSec:Toggle({Name="Murderer Only",Flag="AimMurdOnly",Default=true,Callback=function(v) S.AimMurdOnly=v end})
+AimSec:Dropdown({Name="Target Part",Flag="AimPart",Default="Head",Items={"Head","HumanoidRootPart","UpperTorso","Neck"},Callback=function(v) S.AimPart=v end})
+AimSec:Slider({Name="FOV Radius",Flag="AimFOV",Default=150,Min=10,Max=600,Decimals=1,Suffix=" px",
+    Callback=function(v) S.AimFOV=v FOVCircle.Radius=v end})
+AimSec:Slider({Name="Smoothness",Flag="AimSmooth",Default=0.15,Min=0.01,Max=1,Decimals=0.01,Suffix="x",
+    Callback=function(v) S.AimSmooth=v end})
+
+local KillSec=CombatPage:Section({Name="Kill Aura",Side=2,Icon="100050851789190",Description="Auto knife nearby players"})
+KillSec:Toggle({Name="Kill Aura",Flag="KillAura",Default=false,Callback=function(v) S.KillAura=v end}):SubKeybind({Flag="KillAuraKey",Default=Enum.KeyCode.F})
+KillSec:Slider({Name="Kill Range",Flag="KillRange",Default=15,Min=1,Max=80,Decimals=1,Suffix=" st",Callback=function(v) S.KillRange=v end})
+KillSec:Label("Only works when you are Murderer")
+
+-- ══════════════════════════════════════════════
+--  ██ PAGE: MOVEMENT
+-- ══════════════════════════════════════════════
 local MovPage=Window:Page({Name="Movement",Icon="92464809279921"})
+
 local SpeedSec=MovPage:Section({Name="Speed",Side=1,Icon="122669828593160"})
-SpeedSec:Toggle({Name="Speed Hack",Flag="SpeedEnabled",Default=false,Callback=function(v) State.SpeedEnabled=v if not v then SetSpeed(16) end end}):SubKeybind({Flag="SpeedKey",Default=Enum.KeyCode.X})
-SpeedSec:Slider({Name="Speed Value",Flag="SpeedValue",Default=30,Min=16,Max=120,Decimals=1,Suffix=" ws",Callback=function(v) State.SpeedValue=v end})
-SpeedSec:Toggle({Name="Bunny Hop",Flag="BunnyHop",Default=false,Callback=function(v) State.BunnyHop=v end}):SubKeybind({Flag="BhopKey",Default=Enum.KeyCode.V})
-local FlySec=MovPage:Section({Name="Fly",Side=1,Icon="117786983271442"})
-FlySec:Toggle({Name="Fly",Flag="FlyEnabled",Default=false,Callback=function(v) State.FlyEnabled=v if v then StartFly() else StopFly() end end}):SubKeybind({Flag="FlyKey",Default=Enum.KeyCode.G})
-FlySec:Slider({Name="Fly Speed",Flag="FlySpeed",Default=50,Min=5,Max=300,Decimals=1,Suffix=" sp",Callback=function(v) State.FlySpeed=v end})
-local MiscMovSec=MovPage:Section({Name="Misc",Side=2,Icon="73789337996373"})
-MiscMovSec:Toggle({Name="Noclip",Flag="NoclipEnabled",Default=false,Callback=function(v) State.NoclipEnabled=v end}):SubKeybind({Flag="NoclipKey",Default=Enum.KeyCode.N})
-MiscMovSec:Toggle({Name="Infinite Stamina",Flag="InfiniteStamina",Default=false,Callback=function(v) State.InfiniteStamina=v end})
+SpeedSec:Toggle({Name="Speed Hack",Flag="Speed",Default=false,
+    Callback=function(v) S.Speed=v if not v then SetSpeed(16) end end}):SubKeybind({Flag="SpeedKey",Default=Enum.KeyCode.X})
+SpeedSec:Slider({Name="Walk Speed",Flag="SpeedVal",Default=30,Min=16,Max=200,Decimals=1,Suffix=" ws",Callback=function(v) S.SpeedVal=v end})
 
+local FlySec=MovPage:Section({Name="Fly",Side=1,Icon="117786983271442",Description="WASD + Space/Ctrl"})
+FlySec:Toggle({Name="Fly",Flag="Fly",Default=false,
+    Callback=function(v) S.Fly=v if v then StartFly() else StopFly() end end}):SubKeybind({Flag="FlyKey",Default=Enum.KeyCode.G})
+FlySec:Slider({Name="Fly Speed",Flag="FlySpeed",Default=50,Min=5,Max=400,Decimals=1,Suffix=" sp",Callback=function(v) S.FlySpeed=v end})
+
+local MiscMovSec=MovPage:Section({Name="Misc Movement",Side=2,Icon="73789337996373"})
+MiscMovSec:Toggle({Name="Noclip",Flag="Noclip",Default=false,Callback=function(v) S.Noclip=v end}):SubKeybind({Flag="NoclipKey",Default=Enum.KeyCode.N})
+MiscMovSec:Toggle({Name="Bunny Hop",Flag="Bhop",Default=false,Callback=function(v) S.Bhop=v end}):SubKeybind({Flag="BhopKey",Default=Enum.KeyCode.V})
+MiscMovSec:Toggle({Name="Infinite Stamina",Flag="InfStam",Default=false,Callback=function(v) S.InfStam=v end})
+MiscMovSec:Toggle({Name="God Mode",Flag="GodMode",Default=false,Callback=function(v) S.GodMode=v end})
+
+-- ══════════════════════════════════════════════
+--  ██ PAGE: ANTI-EXPLOIT
+-- ══════════════════════════════════════════════
 local AntiPage=Window:Page({Name="Anti-Exploit",Icon="73789337996373"})
-local AntiFSec=AntiPage:Section({Name="Anti-Fling",Side=1,Icon="117786983271442"})
-AntiFSec:Toggle({Name="Anti-Fling",Flag="AntiFling",Default=false,Callback=function(v) State.AntiFling=v if v then EnableAntiFling() else DisableAntiFling() end end})
-local AntiKSec=AntiPage:Section({Name="Anti-Kill",Side=1,Icon="121760666525660"})
-AntiKSec:Toggle({Name="Anti-Kill",Flag="AntiKill",Default=false,Callback=function(v) State.AntiKill=v if v then EnableAntiKill() else DisableAntiKill() end end})
-AntiKSec:Toggle({Name="God Mode",Flag="GodMode",Default=false,Callback=function(v) State.GodMode=v end})
-local AntiTSec=AntiPage:Section({Name="Anti-Teleport",Side=2,Icon="100050851789190"})
-AntiTSec:Toggle({Name="Anti-Teleport",Flag="AntiTeleport",Default=false,Callback=function(v) State.AntiTeleport=v if v then EnableAntiTeleport() else DisableAntiTeleport() end end})
-AntiTSec:Slider({Name="Max Move Dist",Flag="MaxTeleportDist",Default=50,Min=10,Max=200,Decimals=1,Suffix=" st",Callback=function(v) State.MaxTeleportDist=v end})
-local AntiNSec=AntiPage:Section({Name="Detection",Side=2,Icon="122669828593160"})
-AntiNSec:Toggle({Name="Anti-Noclip",Flag="AntiNoclip",Default=false,Callback=function(v) State.AntiNoclip=v if v then EnableAntiNoclip() else DisableAntiNoclip() end end})
-AntiNSec:Toggle({Name="Anti-Speed",Flag="AntiSpeedHack",Default=false,Callback=function(v) State.AntiSpeedHack=v if v then EnableAntiSpeed() else DisableAntiSpeed() end end})
 
+local AFSec=AntiPage:Section({Name="Anti-Fling",Side=1,Icon="117786983271442",Description="Blocks velocity fling attacks"})
+AFSec:Toggle({Name="Anti-Fling",Flag="AntiFling",Default=false,
+    Callback=function(v) S.AntiFling=v if v then EnableAntiFling() end end})
+
+local AKSec=AntiPage:Section({Name="Anti-Kill",Side=1,Icon="121760666525660",Description="Blocks illegitimate damage"})
+AKSec:Toggle({Name="Anti-Kill",Flag="AntiKill",Default=false,
+    Callback=function(v) S.AntiKill=v if v then EnableAntiKill() end end})
+
+local ATSec=AntiPage:Section({Name="Anti-Teleport",Side=2,Icon="100050851789190"})
+ATSec:Toggle({Name="Anti-Teleport",Flag="AntiTp",Default=false,
+    Callback=function(v) S.AntiTp=v if v then EnableAntiTp() end end})
+ATSec:Slider({Name="Max Move Dist",Flag="MaxTpDist",Default=50,Min=10,Max=250,Decimals=1,Suffix=" st",
+    Callback=function(v) S.MaxTpDist=v end})
+
+local ADSec=AntiPage:Section({Name="Detection",Side=2,Icon="122669828593160"})
+ADSec:Toggle({Name="Anti-Speed Detection",Flag="AntiSpd",Default=false,
+    Callback=function(v) S.AntiSpd=v if v then EnableAntiSpeed() end end})
+
+-- ══════════════════════════════════════════════
+--  ██ PAGE: FARM
+-- ══════════════════════════════════════════════
 local FarmPage=Window:Page({Name="Farm",Icon="81598136527047"})
-local CoinSec=FarmPage:Section({Name="Coin Farm",Side=1,Icon="73789337996373"})
-CoinSec:Toggle({Name="Auto Coin Farm",Flag="AutoCoin",Default=false,Callback=function(v) State.AutoCoin=v end}):SubKeybind({Flag="AutoCoinKey",Default=Enum.KeyCode.C})
+local CoinSec=FarmPage:Section({Name="Coin Farm",Side=1,Icon="73789337996373",Description="Teleports to nearest coin"})
+CoinSec:Toggle({Name="Auto Coin Farm",Flag="AutoCoin",Default=false,Callback=function(v) S.AutoCoin=v end}):SubKeybind({Flag="CoinKey",Default=Enum.KeyCode.C})
 
+-- ══════════════════════════════════════════════
+--  ██ PAGE: MISC
+-- ══════════════════════════════════════════════
 local MiscPage=Window:Page({Name="Misc",Icon="122669828593160"})
-local DesyncSec=MiscPage:Section({Name="Desync",Side=1,Icon="100050851789190"})
-DesyncSec:Toggle({Name="Enable Desync",Flag="DesyncEnabled",Default=false,Callback=function(v) State.DesyncEnabled=v ApplyDesync() end}):SubKeybind({Flag="DesyncKey",Default=Enum.KeyCode.Z})
-DesyncSec:Slider({Name="Strength",Flag="DesyncStrength",Default=5,Min=1,Max=25,Decimals=1,Suffix=" st",Callback=function(v) State.DesyncStrength=v if State.DesyncEnabled then ApplyDesync() end end})
-local InfoSec=MiscPage:Section({Name="Info",Side=2,Icon="73789337996373"})
-local PlrLabel=InfoSec:Label("Players: --")
-local AliveLabel2=InfoSec:Label("Alive: --")
-local RoleLabel2=InfoSec:Label("Role: --")
+
+local DesyncSec=MiscPage:Section({Name="Desync",Side=1,Icon="100050851789190",Description="Server-side position flicker"})
+DesyncSec:Toggle({Name="Enable Desync",Flag="Desync",Default=false,
+    Callback=function(v) S.Desync=v ApplyDesync() end}):SubKeybind({Flag="DesyncKey",Default=Enum.KeyCode.Z})
+DesyncSec:Slider({Name="Strength",Flag="DesyncStr",Default=5,Min=1,Max=30,Decimals=1,Suffix=" st",
+    Callback=function(v) S.DesyncStr=v if S.Desync then ApplyDesync() end end})
+
+local InfoSec=MiscPage:Section({Name="Server Info",Side=2,Icon="73789337996373"})
+local PlrLbl=InfoSec:Label("Players: --")
+local AliveLbl=InfoSec:Label("Alive: --")
+local RoleLbl=InfoSec:Label("Role: --")
 task.spawn(function()
     while true do task.wait(1)
-        local alive=0 for _,p in ipairs(Players:GetPlayers()) do if IsAlive(p) then alive+=1 end end
-        PlrLabel:SetText("Players: "..#Players:GetPlayers())
-        AliveLabel2:SetText("Alive: "..alive)
-        RoleLabel2:SetText("Role: "..GetRole(LocalPlayer))
+        local alive=0 for _,p in ipairs(Players:GetPlayers()) do if Alive(p) then alive+=1 end end
+        PlrLbl:SetText("Players: "..#Players:GetPlayers())
+        AliveLbl:SetText("Alive: "..alive)
+        RoleLbl:SetText("Role: "..Role(LocalPlayer))
     end
 end)
+
 local SrvSec=MiscPage:Section({Name="Server",Side=1,Icon="117786983271442"})
 SrvSec:Button({Name="Server Hop",Callback=function()
     task.spawn(function()
         Library:Notification({Title="Server Hop",Description="Searching...",Duration=1})
-        local HS=game:GetService("HttpService") local TS=game:GetService("TeleportService")
+        local HS=game:GetService("HttpService"); local TS=game:GetService("TeleportService")
         local ok,s=pcall(function() return HS:JSONDecode(game:HttpGet("https://games.roblox.com/v1/games/"..game.PlaceId.."/servers/0?sortOrder=Asc&limit=100")) end)
         if ok and s and s.data then
             for _,srv in ipairs(s.data) do
@@ -616,23 +801,46 @@ SrvSec:Button({Name="Server Hop",Callback=function()
         Library:Notification({Title="Server Hop",Description="No servers found.",Duration=2})
     end)
 end})
+SrvSec:Button({Name="Low Pop Server",Callback=function()
+    task.spawn(function()
+        Library:Notification({Title="Low Pop Hop",Description="Searching...",Duration=1})
+        local HS=game:GetService("HttpService"); local TS=game:GetService("TeleportService")
+        local ok,s=pcall(function() return HS:JSONDecode(game:HttpGet("https://games.roblox.com/v1/games/"..game.PlaceId.."/servers/0?sortOrder=Asc&limit=100")) end)
+        if ok and s and s.data then
+            local best,lowest=nil,999
+            for _,srv in ipairs(s.data) do
+                if srv.id~=game.JobId and srv.playing and srv.playing<srv.maxPlayers and srv.playing<lowest then
+                    lowest=srv.playing; best=srv
+                end
+            end
+            if best then pcall(function() TS:TeleportToPlaceInstance(game.PlaceId,best.id) end) return end
+        end
+        Library:Notification({Title="Low Pop Hop",Description="No servers found.",Duration=2})
+    end)
+end})
 SrvSec:Button({Name="Rejoin",Callback=function()
     pcall(function() game:GetService("TeleportService"):TeleportToPlaceInstance(game.PlaceId,game.JobId) end)
 end})
 
--- ══════════════════════════════════════════
--- SETTINGS + WATERMARK + INIT
--- ══════════════════════════════════════════
-Library:CreateSettingsPage(Window,KeybindList)
+-- ══════════════════════════════════════════════
+--  SETTINGS PAGE + WATERMARK + INIT
+-- ══════════════════════════════════════════════
+Library:CreateSettingsPage(Window, KeybindList)
 
+-- Watermark update loop
 task.spawn(function()
     while true do task.wait(1)
         local ping=0 pcall(function() ping=math.floor(Stats.Network.ServerStatsItem["Data Ping"]:GetValue()) end)
-        Library:Watermark({"MM2 Hub"," | ","FPS: "..fpsDisplay," | ","Ping: "..ping.."ms"," | ",GetRole(LocalPlayer)})
+        Library:Watermark({"MM2 Hub v3"," | ","FPS: "..fpsDisp," | ","Ping: "..ping.."ms"," | ",Role(LocalPlayer)})
     end
 end)
-Library.WatermarkFrame.Instance.Visible=true
+Library.WatermarkFrame.Instance.Visible = true
 
 Window:Init()
 
-Library:Notification({Title="MM2 Hub",Description="Loaded! RightAlt to open menu.",Duration=4})
+Library:Notification({
+    Title="MM2 Hub v3",
+    Description="Loaded! RightAlt = menu. ESP & FOV fixed.",
+    Duration=4,
+    Icon="73789337996373"
+})
